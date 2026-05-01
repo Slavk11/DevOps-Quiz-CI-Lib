@@ -1,0 +1,13 @@
+.frontend-build-base:
+  stage: build
+  tags:
+    - k8s-frontend
+  image: docker:24
+  services:
+    - docker:24-dind
+  variables:
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_HOST: "tcp://docker:2375"
+    DOCKER_DRIVER: "overlay2"
+  before_script:
+    - echo "$YC_KEY_JSON" | docker login --username json_key --password-stdin cr.yandex
