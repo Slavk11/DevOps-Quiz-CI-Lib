@@ -6,19 +6,25 @@
   variables:
     SERVICE: ""
     JOB_NAMESPACE: default
+    YC_REGISTRY: "cr.yandex/crpd87adl3oop0ieiuk7"
   before_script:
     - |
       if [ -z "$SERVICE" ]; then
         echo "ERROR: variable SERVICE must be set in extending job"
         exit 1
       fi
+
       JOB_NAME="migrate-${SERVICE}-${CI_COMMIT_SHORT_SHA}"
-      echo "Migrating service: $SERVICE"
-      echo "Image tag: $CI_COMMIT_SHORT_SHA"
-      echo "K8s Job name: $JOB_NAME"
+
+      echo "Migrating service: ${SERVICE}"
+      echo "Image: ${YC_REGISTRY}/${SERVICE}:${CI_COMMIT_SHORT_SHA}"
+      echo "K8s Job namespace: ${JOB_NAMESPACE}"
+      echo "K8s Job name: ${JOB_NAME}"
+
   script:
     - JOB_NAME="migrate-${SERVICE}-${CI_COMMIT_SHORT_SHA}"
-    - kubectl delete job ${JOB_NAME} -n ${JOB_NAMESPACE} --ignore-not-found=true
+    - kubectl delete job "${JOB_NAME}" -n "${JOB_NAMESPACE}" --ignore-not-found=true
+
     - |
       cat > /tmp/migrate-job.yaml <<MANIFEST
       apiVersion: batch/v1
@@ -32,6 +38,7 @@
       spec:
         ttlSecondsAfterFinished: 300
         backoffLimit: 0
+        activeDeadlineSeconds: 300
         template:
           metadata:
             labels:
@@ -41,31 +48,89 @@
             restartPolicy: Never
             containers:
               - name: migrate
-                image: cr.yandex/crpd87adl3oop0ieiuk7/${SERVICE}:${CI_COMMIT_SHORT_SHA}
+                image: ${YC_REGISTRY}/${SERVICE}:${CI_COMMIT_SHORT_SHA}
                 imagePullPolicy: Always
                 command:
                   - "sh"
                   - "-c"
                   - |
                     set +e
-                    for i in \$(seq 1 50); do
-                      echo "=== Iteration \$i ==="
+
+                    STATUS_FILE="/tmp/sql-migrate-status.txt"
+
+                    print_status() {
+                      /opt/sql-migrate status -env=development > "\$STATUS_FILE" 2>&1
+                      STATUS_EXIT=\$?
+
+                      cat "\$STATUS_FILE"
+
+                      if [ "\$STATUS_EXIT" -ne 0 ]; then
+                        echo "ERROR: failed to get sql-migrate status"
+                        exit 1
+                      fi
+                    }
+
+                    pending_count() {
+                      # In sql-migrate status output, unapplied migrations are marked as "no".
+                      # We count only a table cell with exact value "no", not a random substring
+                      # in a file name or log message.
+                      grep -Ec '\|[[:space:]]*no[[:space:]]*\|' "\$STATUS_FILE"
+                    }
+
+                    echo "=== Initial migration status ==="
+                    print_status
+
+                    PENDING=\$(pending_count)
+                    echo "Initial pending migrations: \$PENDING"
+
+                    if [ "\$PENDING" -eq 0 ]; then
+                      echo "All migrations already applied"
+                      exit 0
+                    fi
+
+                    while true; do
+                      echo "=== Applying next migration ==="
+                      echo "Pending before apply: \$PENDING"
+
+                      # Do not trust sql-migrate exit code here.
+                      # With CockroachDB it may return non-zero even when a migration was applied.
+                      # The source of truth is sql-migrate status after the attempt.
                       /opt/sql-migrate up -env=development -limit=1
-                      STATUS=\$(/opt/sql-migrate status -env=development 2>&1)
-                      echo "\$STATUS"
-                      if ! echo "\$STATUS" | grep -q "no"; then
-                        echo "All migrations applied!"
+                      UP_EXIT=\$?
+
+                      if [ "\$UP_EXIT" -ne 0 ]; then
+                        echo "sql-migrate up returned non-zero exit code: \$UP_EXIT"
+                        echo "Checking status to determine whether migration progressed..."
+                      fi
+
+                      echo "=== Migration status after apply ==="
+                      print_status
+
+                      CURRENT_PENDING=\$(pending_count)
+                      echo "Pending after apply: \$CURRENT_PENDING"
+
+                      if [ "\$CURRENT_PENDING" -eq 0 ]; then
+                        echo "All migrations applied"
                         exit 0
                       fi
+
+                      if [ "\$CURRENT_PENDING" -ge "\$PENDING" ]; then
+                        echo "ERROR: no migration progress detected"
+                        echo "Previous pending: \$PENDING"
+                        echo "Current pending: \$CURRENT_PENDING"
+                        exit 1
+                      fi
+
+                      PENDING="\$CURRENT_PENDING"
                       sleep 1
                     done
-                    echo "Hit iteration limit"
-                    exit 1
       MANIFEST
+
     - cat /tmp/migrate-job.yaml
     - kubectl apply -f /tmp/migrate-job.yaml
     - kubectl wait --for=condition=complete --timeout=300s job/${JOB_NAME} -n ${JOB_NAMESPACE}
     - kubectl logs -n ${JOB_NAMESPACE} -l job-name=${JOB_NAME} --tail=200
+
   after_script:
     - JOB_NAME="migrate-${SERVICE}-${CI_COMMIT_SHORT_SHA}"
     - kubectl logs -n ${JOB_NAMESPACE} -l job-name=${JOB_NAME} --tail=200 || true
