@@ -1,0 +1,23 @@
+.frontend-build-base:
+  stage: build
+  tags:
+    - k8s-frontend
+  image: docker:24
+  services:
+
+    - name: docker:24-dind
+      alias: docker
+      command: ["--tls=false"]
+  variables:
+    DOCKER_HOST: "tcp://docker:2375"
+    DOCKER_TLS_CERTDIR: ""
+    DOCKER_DRIVER: "overlay2"
+  before_script:
+    - |
+      for i in $(seq 1 30); do
+        docker info && break
+        echo "Waiting for Docker daemon..."
+        sleep 2
+      done
+    - docker info
+    - echo "$YC_KEY_JSON" | docker login --username json_key --password-stdin cr.yandex
