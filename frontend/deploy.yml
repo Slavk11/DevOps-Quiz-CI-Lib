@@ -23,5 +23,5 @@
         --namespace default \
         --wait \
         --timeout 5m
-    - kubectl -n default rollout status deployment/"$SERVICE" --timeout=120s
-    - kubectl -n default get pods -l app="$SERVICE"
+    - kubectl -n default rollout status deployment/"${SERVICE}-service-chart" --timeout=120s
+    - kubectl -n default get pods -l app.kubernetes.io/instance="$SERVICE"
