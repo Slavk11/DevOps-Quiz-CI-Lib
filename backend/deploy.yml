@@ -31,5 +31,5 @@
         --timeout 5m
     # Show what we deployed for visibility in pipeline logs.
     - kubectl -n default rollout status deployment/"${SERVICE}-service-chart" --timeout=120s
-    - kubectl -n default get pods -l app.kubernetes.io/instance="$SERVICE"
+    - kubectl -n default get pods -l app="${SERVICE}-service-chart"
 
