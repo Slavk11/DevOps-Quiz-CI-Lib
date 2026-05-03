@@ -1,0 +1,34 @@
+.backend-deploy-base:
+  stage: deploy
+  tags:
+    - k8s
+  image: dtzar/helm-kubectl:latest
+  variables:
+    # SERVICE — must be set by the extending job (users, leads, quiz, ...)
+    SERVICE: ""
+    CHARTS_REPO: "git.lifeisfile.com/slavk11/charts.git"
+    CHARTS_BRANCH: "master"
+  before_script:
+    # Clone the charts repo via deploy token. The token is read-only and
+    # scoped to the charts repo only — credentials never end up in the
+    # cloned working tree because they're stripped after the clone.
+    - git clone --depth 1 --branch "$CHARTS_BRANCH" "https://${CHARTS_DEPLOY_USER}:${CHARTS_DEPLOY_TOKEN}@${CHARTS_REPO}" charts
+  script:
+    - |
+      if [ -z "$SERVICE" ]; then
+        echo "SERVICE variable is required"
+        exit 1
+      fi
+    - echo "Deploying $SERVICE with image tag $CI_COMMIT_SHORT_SHA"
+    # Helm upgrade with --install: idempotent — installs if release missing,
+    # upgrades otherwise. --wait blocks until pods are Ready or timeout.
+    - |
+      helm upgrade --install "$SERVICE" charts/service-chart \
+        -f "charts/values/services/${SERVICE}.yaml" \
+        --set image.tag="$CI_COMMIT_SHORT_SHA" \
+        --namespace default \
+        --wait \
+        --timeout 5m
+    # Show what we deployed for visibility in pipeline logs.
+    - kubectl -n default rollout status deployment/"$SERVICE" --timeout=120s
+    - kubectl -n default get pods -l app="$SERVICE"
