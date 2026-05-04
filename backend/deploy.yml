@@ -1,0 +1,7 @@
+include:
+  - local: '/common/deploy.yml'
+
+.backend-deploy-base:
+  extends: .deploy-base
+  tags:
+    - k8s
