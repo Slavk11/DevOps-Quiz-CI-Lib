@@ -1,0 +1,36 @@
+# Common deploy template used by both backend and frontend services.
+# Concrete templates extend this and override `tags` to land on the
+# correct runner (k8s for backend, k8s-frontend for frontend).
+.deploy-base:
+  stage: deploy
+  image: dtzar/helm-kubectl:latest
+  variables:
+    # Must be set by the extending job (users, leads, app, land, ...).
+    SERVICE: ""
+    # Branch of the charts repo to use.
+    CHARTS_REF: "master"
+  before_script:
+    # Use built-in CI_JOB_TOKEN to clone charts. The token is short-lived
+    # and scoped to this job. Requires slavk11/charts CI/CD settings to
+    # allow CI_JOB_TOKEN from slavk11/backend and slavk11/frontend.
+    - |
+      git clone --depth 1 --branch "$CHARTS_REF" \
+        "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/slavk11/charts.git" charts
+  script:
+    - |
+      if [ -z "$SERVICE" ]; then
+        echo "SERVICE variable is required"
+        exit 1
+      fi
+    - echo "Deploying $SERVICE with image tag $CI_COMMIT_SHORT_SHA"
+    # helm upgrade --install is idempotent and --wait blocks until all
+    # release resources (Deployment, Service, etc.) become ready or fail.
+    - |
+      helm upgrade --install "$SERVICE" charts/service-chart \
+        -f "charts/values/services/${SERVICE}.yaml" \
+        --set image.tag="$CI_COMMIT_SHORT_SHA" \
+        --namespace default \
+        --wait \
+        --timeout 5m
+    # Show pods for visibility in logs.
+    - kubectl -n default get pods -l app="${SERVICE}-service-chart"

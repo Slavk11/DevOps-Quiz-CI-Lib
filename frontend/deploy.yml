@@ -1,27 +1,7 @@
+include:
+  - local: '/common/deploy.yml'
+
 .frontend-deploy-base:
-  stage: deploy
+  extends: .deploy-base
   tags:
     - k8s-frontend
-  image: dtzar/helm-kubectl:latest
-  variables:
-    SERVICE: ""
-    CHARTS_REPO: "git.lifeisfile.com/slavk11/charts.git"
-    CHARTS_BRANCH: "master"
-  before_script:
-    - git clone --depth 1 --branch "$CHARTS_BRANCH" "https://${CHARTS_DEPLOY_USER}:${CHARTS_DEPLOY_TOKEN}@${CHARTS_REPO}" charts
-  script:
-    - |
-      if [ -z "$SERVICE" ]; then
-        echo "SERVICE variable is required"
-        exit 1
-      fi
-    - echo "Deploying $SERVICE with image tag $CI_COMMIT_SHORT_SHA"
-    - |
-      helm upgrade --install "$SERVICE" charts/service-chart \
-        -f "charts/values/services/${SERVICE}.yaml" \
-        --set image.tag="$CI_COMMIT_SHORT_SHA" \
-        --namespace default \
-        --wait \
-        --timeout 5m
-    - kubectl -n default rollout status deployment/"${SERVICE}-service-chart" --timeout=120s
-    - kubectl -n default get pods -l app="${SERVICE}-service-chart"
