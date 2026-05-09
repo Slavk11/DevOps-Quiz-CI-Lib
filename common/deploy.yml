@@ -1,6 +1,13 @@
 # Common deploy template used by both backend and frontend services.
 # Concrete templates extend this and override `tags` to land on the
 # correct runner (k8s for backend, k8s-frontend for frontend).
+#
+# Supports two deployment styles:
+# 1. Static release (master deploy): RELEASE_NAME defaults to $SERVICE,
+#    INGRESS_HOST stays as defined in values file.
+# 2. Dynamic environment: jobs override RELEASE_NAME and INGRESS_HOST
+#    to create per-branch standalone releases (e.g. app-feature-foo
+#    on app-feature-foo.hex-server.site).
 .deploy-base:
   stage: deploy
   image: dtzar/helm-kubectl:latest
@@ -9,6 +16,12 @@
     SERVICE: ""
     # Branch of the charts repo to use.
     CHARTS_REF: "master"
+    # Helm release name. Defaults to SERVICE for static (master) deploys.
+    # Dynamic envs override with "<service>-<branch-slug>".
+    RELEASE_NAME: "$SERVICE"
+    # Optional ingress host override. Empty = use whatever is in the
+    # service's values file. Set for dynamic envs to force a unique URL.
+    INGRESS_HOST: ""
   before_script:
     # Use built-in CI_JOB_TOKEN to clone charts. The token is short-lived
     # and scoped to this job. Requires slavk11/charts CI/CD settings to
@@ -22,15 +35,27 @@
         echo "SERVICE variable is required"
         exit 1
       fi
-    - echo "Deploying $SERVICE with image tag $CI_COMMIT_SHORT_SHA"
+    - echo "Deploying $SERVICE as helm release '$RELEASE_NAME' with image tag $CI_COMMIT_SHORT_SHA"
+    # Build helm --set arguments. INGRESS_HOST is added only when set —
+    # this keeps master deploys using the host from the values file.
+    - |
+      EXTRA_SETS=""
+      if [ -n "$INGRESS_HOST" ]; then
+        EXTRA_SETS="--set ingress.host=${INGRESS_HOST}"
+        # Disable TLS for dynamic envs to skip cert-manager provisioning,
+        # which avoids Let's Encrypt rate limits on short-lived stands.
+        EXTRA_SETS="$EXTRA_SETS --set ingress.tls.enabled=false"
+        echo "Overriding ingress host to $INGRESS_HOST (TLS disabled)"
+      fi
     # helm upgrade --install is idempotent and --wait blocks until all
     # release resources (Deployment, Service, etc.) become ready or fail.
     - |
-      helm upgrade --install "$SERVICE" charts/service-chart \
+      helm upgrade --install "$RELEASE_NAME" charts/service-chart \
         -f "charts/values/services/${SERVICE}.yaml" \
         --set image.tag="$CI_COMMIT_SHORT_SHA" \
+        $EXTRA_SETS \
         --namespace default \
         --wait \
         --timeout 5m
     # Show pods for visibility in logs.
-    - kubectl -n default get pods -l app="${SERVICE}-service-chart"
+    - kubectl -n default get pods -l app="${RELEASE_NAME}-service-chart"
