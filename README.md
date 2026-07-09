@@ -4,37 +4,63 @@ Reusable CI/CD pipeline library for the
 [DevOps-Quiz](https://github.com/Slavk11/DevOps-Quiz) platform.
 
 Every service in the platform — 9 Go microservices and 3 frontend apps —
-runs the **same versioned pipeline** included from this repository instead of
-maintaining its own copy-pasted `.gitlab-ci.yml`. A service's own CI file
-shrinks to a few lines:
+runs a pipeline **included from this repository** instead of maintaining its
+own copy-pasted `.gitlab-ci.yml`. A service's own CI file shrinks to a few
+lines:
 
 ```yaml
-# .gitlab-ci.yml of any platform service
+# .gitlab-ci.yml of a backend service
 include:
   - project: 'devopstrain-project/ci-lib'
-    ref: v1              # pinned library version
-    file: 'service.yml'
+    file:
+      - 'backend/build.yml'
+      - 'backend/migrate.yml'
+      - 'common/deploy.yml'
 
 variables:
   SERVICE_NAME: quiz
 ```
 
-Fixing a pipeline bug or adding a security scan here updates **every service
-at once** — no chasing 12 repositories.
+Fixing a pipeline bug or adding a step here updates **every service at
+once** — no chasing 12 repositories.
+
+## Structure
+
+Templates are organized by **service type**, with shared logic factored out:
+
+```
+.
+├── backend/
+│   ├── build.yml         # Go build & test, image packaging
+│   ├── migrate.yml       # DB migrations
+│   └── deploy.yml        # backend-specific deploy steps
+├── frontend/
+│   ├── build.yml         # React (app) / Hugo (land) builds, static bundles
+│   └── deploy.yml        # frontend-specific deploy steps
+└── common/
+    └── deploy.yml        # shared deploy logic: helm upgrade, environments
+```
+
+A service composes its pipeline from the templates matching its type:
+
+| Service type | Includes |
+|---|---|
+| Go microservice with DB (`quiz`, `leads`, `users`…) | `backend/build` + `backend/migrate` + deploy |
+| Go microservice without DB (`chrome`, `show`…) | `backend/build` + deploy |
+| Frontend app (`app`, `land`, `widget`) | `frontend/build` + deploy |
 
 ## Pipeline
 
 ```
-build → test → package → migrate → deploy → (review env | prod)
+build & test → package image → [migrate] → deploy
 ```
 
 | Stage | What happens |
 |---|---|
-| **build** | Compile the service, cache dependencies between runs |
-| **test** | Unit / integration tests |
+| **build** | Compile/build the service, run tests, cache dependencies |
 | **package** | Build the Docker image, tag with commit SHA, push to the registry |
-| **migrate** | Apply DB migrations (backward-compatible by contract) |
-| **deploy** | `helm upgrade --install` from [Charts](https://github.com/Slavk11/DevOps-Quiz-Charts) with the service's values file |
+| **migrate** | Apply DB migrations (backward-compatible by contract) — backend services with a database only |
+| **deploy** | `helm upgrade --install` of the service's release from [Charts](https://github.com/Slavk11/DevOps-Quiz-Charts) with its values file |
 
 ### Per-branch behaviour
 
@@ -45,25 +71,6 @@ build → test → package → migrate → deploy → (review env | prod)
   [canary flow](https://github.com/Slavk11/DevOps-Quiz-Charts#canary-releases)
   instead of a direct rollout
 
-## Structure
-
-```
-.
-├── service.yml           # full pipeline for a standard platform service
-├── templates/
-│   ├── build.yml         # build & cache
-│   ├── test.yml
-│   ├── package.yml       # docker build/push
-│   ├── migrate.yml       # DB migrations
-│   ├── deploy.yml        # helm deploy, one job per environment type
-│   └── review.yml        # dynamic environments: create / destroy
-└── README.md
-```
-
-Templates are composable: a service with no database simply doesn't include
-the migrate template; frontend apps swap the Go build for their own
-(React build for `app`, Hugo for `land`).
-
 ## Runners
 
 All jobs run on **self-hosted runners inside the cluster**
@@ -73,16 +80,16 @@ without exposing it to the outside world.
 
 ## Design decisions
 
-- **Library over copy-paste** — pipeline logic exists exactly once;
-  services declare *what* they are, the library decides *how* to ship them
-- **Pinned versions (`ref:`)** — services consume a tagged library version,
-  so a library change never silently breaks someone's pipeline; upgrades are
-  explicit
-- **Migrations in the pipeline, not in app startup** — a deploy fails fast on
-  a bad migration instead of crash-looping pods; combined with
-  backward-compatible migrations this makes `helm rollback` always safe
-- **Review envs from the same templates** — a review environment is a normal
-  deploy with different values, not a separate hand-maintained script
+- **Templates by service type, not by service** — `backend/` and `frontend/`
+  cover every current and future service; adding service #13 requires zero
+  new CI code
+- **Shared deploy in `common/`** — how the platform deploys is defined once;
+  backend and frontend differ in how they *build*, not in how they *ship*
+- **Migrations as a pipeline stage** — a deploy fails fast on a bad migration
+  instead of crash-looping pods; combined with backward-compatible migrations
+  this keeps `helm rollback` always safe
+- **Library over copy-paste** — services declare *what* they are, the library
+  decides *how* to ship them
 
 ---
 
